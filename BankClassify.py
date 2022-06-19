@@ -44,7 +44,12 @@ class BankClassify():
         elif bank == "mint":
             print("adding Mint data!")
             self.new_data = self._read_mint_csv(filename)
+        elif bank == "SEB":
+            print("adding SEB data!")
+            self.new_data = self._read_seb_xlsx(filename)
 
+
+        self._replace_phonenumbers(self.new_data)
         self._ask_with_guess(self.new_data)
 
         self.prev_data = pd.concat([self.prev_data, self.new_data])
@@ -307,7 +312,7 @@ class BankClassify():
 
     def _read_barclays_csv(self, filename):
             """Read a file in the CSV format that Barclays Bank provides downloads in.
-            Edge case: foreign txn's sometimes causes more cols than it should 
+            Edge case: foreign txn's sometimes causes more cols than it should
             Returns a pd.DataFrame with columns of 'date' 1 , 'desc' (memo)  5 and 'amount' 3 ."""
 
             # Edge case: Barclays foreign transaction memo sometimes contains a comma, which is bad.
@@ -329,11 +334,77 @@ class BankClassify():
                 inplace=True
             )
 
-            # cast types to columns for math 
+            # cast types to columns for math
             df = df.astype({"desc": str, "date": str, "amount": float})
 
             return df
 
+
+    def _read_seb_xlsx(self, filename):
+        """Read a file in the xlsx format that SEB provides downloads in.
+
+        Returns a pd.DataFrame with columns of 'date' 0 , 'desc'  4 and 'amount' 5 ."""
+
+        df = pd.read_excel(filename, skiprows=7)
+
+        """Rename columns """
+        #df.columns = ['date', 'desc', 'amount']
+        df.rename(
+            columns={
+                "Valutadatum" : 'date',
+                "Text" : 'desc',
+                "Belopp": 'amount',
+            },
+            inplace=True
+        )
+
+        # The actual transaction date is sometimes added to the "desc" field.
+        # This is inserted into the "date" field and removed from the "desc" field
+        df[['desc', 'date2']] = df['desc'].str.rsplit("/", n=1, expand=True)
+        df['date2'].fillna(df['date'], inplace=True)
+        df['date2'] = pd.to_datetime(df.date).dt.strftime('%d/%m/%Y')
+
+        df.rename(columns={'date': 'date_old', 'date2': 'date'}, inplace=True)
+
+        df['desc'] = df['desc'].str.rstrip(' ')
+        # cast types to columns for math
+        df = df.astype({"desc": str, "date": str, "amount": float})
+
+
+        return df
+
+    def _replace_phonenumbers(self, df):
+        """Read phonebook and swap numbers to names if possible (useful for swish)"""
+
+        try:
+            phonebook = pd.read_csv('contacts.csv', skiprows=0)
+        except:
+            print('No contacts.csv file exists or error reading file')
+            return
+
+        # Clean the numbers field from symbols and whitespace
+        phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.replace('[+, ,-]','')
+        # Remove second number in special cases
+        phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.split(':::').str[0]
+
+        # Remove first 0 to get more similar to the  format +46 format as in swish
+        phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.lstrip('046')
+
+        #Remove 46 in all numbers that start with 46
+        df['desc'] = df['desc'].str.replace(r'^46', '')
+
+        phonebook['Name'] = phonebook['Name'] + ' (Swish)'
+
+        # Replace the desc if it matches the number in the phonebook
+        phonebook_usable = phonebook[phonebook['Phone 1 - Value'].isin(df['desc'])][['Name', 'Phone 1 - Value']]
+        phonebook_dictionary = phonebook.set_index('Phone 1 - Value')['Name'].to_dict()
+        df['desc'] = df['desc'].replace(phonebook_dictionary)
+
+        #This Works but NaN
+        #df['desc'].map({'46701495141': 'Hej'})
+
+
+        return df
 
     def _get_training(self, df):
         """Get training data for the classifier, consisting of tuples of

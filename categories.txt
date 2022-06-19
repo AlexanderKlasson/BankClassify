@@ -1,19 +1,6 @@
-Income
-Bill - General
-Bill - Utilities
-Bill - Communications
-Travel - General
-Travel - Car
-Travel - Petrol
-Supermarket
-Cash Out
-Eating Out
-House
-Books
-Craft
-Charity Shop       
-Presents
-Toiletries
-Mortgage
-Paypal
-Unclassified
+Unclear
+Travel
+Tele
+SL
+Loan
+SL
