@@ -8,6 +8,46 @@ from textblob.classifiers import NaiveBayesClassifier
 from colorama import init, Fore, Style
 from tabulate import tabulate
 
+
+def _replace_phonenumbers(df):
+    """Read phonebook and swap numbers to names if possible (useful for swish)"""
+
+    try:
+        phonebook = pd.read_csv('contacts.csv', skiprows=0)
+    except:
+        print('No contacts.csv file exists or error reading file')
+        return
+
+    # Clean the numbers field from symbols and whitespace
+    phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.replace('[+, ,-]','', regex=True)
+    # Remove second number in special cases
+    phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.split(':::').str[0]
+
+    # Remove first 0 to get more similar to the  format +46 format as in swish
+    phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.lstrip('046')
+
+    #Remove 46 in all numbers that start with 46
+    df['desc'] = df['desc'].str.replace(r'^46', '', regex=True)
+
+    phonebook['Name'] = phonebook['Name'] + ' (Swish)'
+
+    # Replace the desc if it matches the number in the phonebook
+    phonebook_usable = phonebook[phonebook['Phone 1 - Value'].isin(df['desc'])][['Name', 'Phone 1 - Value']]
+    phonebook_dictionary = phonebook.set_index('Phone 1 - Value')['Name'].to_dict()
+    df['desc'] = df['desc'].replace(phonebook_dictionary)
+
+    return df
+
+
+def _print_transaction(row):
+    print("On: %s\t %.0f SEK   Description: %s" % (row['date'], row['amount'], row['desc']))
+
+
+def _strip_numbers(s):
+#    """Strip numbers from the given string"""
+#    return re.sub("[^A-Z ]", "", s)
+    return s
+
 class BankClassify():
 
     def __init__(self, data="AllData.csv"):
@@ -21,6 +61,8 @@ class BankClassify():
         else:
             self.prev_data = pd.DataFrame(columns=['date', 'desc', 'amount', 'cat'])
 
+        # TODO: Change the classifier to input more than just a tuple containing Class and description. "Date" and
+        #  amount is not used atm. Weekday could also be interesting to add
         self.classifier = NaiveBayesClassifier(self._get_training(self.prev_data), self._extractor)
 
     def add_data(self, filename, bank="santander"):
@@ -30,30 +72,31 @@ class BankClassify():
          - filename: filename of Santander-format file
         """
         if bank == "santander":
-            print("adding Santander data!")
+            print("Adding Santander data!")
             self.new_data = self._read_santander_file(filename)
         elif bank == "nationwide":
-            print("adding Nationwide data!")
+            print("Adding Nationwide data!")
             self.new_data = self._read_nationwide_file(filename)
         elif bank == "lloyds":
-            print("adding Lloyds Bank data!")
+            print("Adding Lloyds Bank data!")
             self.new_data = self._read_lloyds_csv(filename)
         elif bank == "barclays":
-            print("adding Barclays Bank data!")
+            print("Adding Barclays Bank data!")
             self.new_data = self._read_barclays_csv(filename)
         elif bank == "mint":
-            print("adding Mint data!")
+            print("Adding Mint data!")
             self.new_data = self._read_mint_csv(filename)
         elif bank == "SEB":
-            print("adding SEB data!")
+            print("Adding SEB data!")
             self.new_data = self._read_seb_xlsx(filename)
 
+        _replace_phonenumbers(self.new_data)
 
-        self._replace_phonenumbers(self.new_data)
         self._ask_with_guess(self.new_data)
 
         self.prev_data = pd.concat([self.prev_data, self.new_data])
         # save data to the same file we loaded earlier
+        print("Saving additions to AllData.csv")
         self.prev_data.to_csv(self.trainingDataFile, index=False)
 
     def _prep_for_analysis(self):
@@ -103,9 +146,10 @@ class BankClassify():
             cats_list = [[idnum, cat] for idnum, cat in categories.items()]
             cats_table = tabulate(cats_list)
 
-            stripped_text = self._strip_numbers(row['desc'])
+            stripped_text = _strip_numbers(row['desc'])
 
             # Guess a category using the classifier (only if there is data in the classifier)
+            print("Coming up with a guess")
             if len(self.classifier.train_set) > 1:
                 guess = self.classifier.classify(stripped_text)
             else:
@@ -115,32 +159,45 @@ class BankClassify():
             # Print list of categories
             print(chr(27) + "[2J")
             print(cats_table)
-            print("\n\n")
+            print("\n")
             # Print transaction
-            print("On: %s\t %.2f\n%s" % (row['date'], row['amount'], row['desc']))
-            print(Fore.RED  + Style.BRIGHT + "My guess is: " + str(guess) + Fore.RESET)
+            _print_transaction(row)
+            print(Fore.RED  + Style.BRIGHT + "My guess is: " + str(guess) + Fore.RESET + " (leave blank if correct, "
+                "enter 'h' for help transactions and enter 'q' to quit)")
 
             input_value = input("> ")
+
+            while input_value.lower() == 'h':
+                print("On: %s\t %.0f SEK   Description: %s" % (row['date'], row['amount'], row['desc']))
+                input_value = input("> ")
+
+            # A Function to print prior and later transactions (for help) should be added
 
             if input_value.lower() == 'q':
                 # If the input was 'q' then quit
                 return df
+
+            # Update classifier class
             if input_value == "":
                 # If the input was blank then our guess was right!
                 df.at[index, 'cat'] = guess
                 self.classifier.update([(stripped_text, guess)])
             else:
                 # Otherwise, our guess was wrong
-                try:
-                    # Try converting the input to an integer category number
-                    # If it works then we've entered a category
-                    category_number = int(input_value)
-                    category = categories[category_number]
-                except ValueError:
-                    # Otherwise, we've entered a new category, so add it to the list of
-                    # categories
+                # There are 2 ways to enter an existing category, either matching the text or providing the number
+                if input_value in categories.values():
                     category = input_value
-                    self._add_new_category(category)
+                else:
+                    try:
+                        # Try converting the input to an integer category number
+                        # If it works then we've entered a category
+                        category_number = int(input_value)
+                        category = categories[category_number]
+                    except ValueError:
+                        # Otherwise, we've entered a new category, so add it to the list of
+                        # categories
+                        category = input_value
+                        self._add_new_category(category)
                     categories = self._read_categories()
 
                 # Write correct answer
@@ -152,7 +209,7 @@ class BankClassify():
 
     def _make_date_index(self, df):
         """Make the index of df a Datetime index"""
-        df.index = pd.DatetimeIndex(df.date.apply(dateutil.parser.parse,dayfirst=True))
+        df.index = pd.DatetimeIndex(df.date.apply(dateutil.parser.parse, dayfirst=True))
 
         return df
 
@@ -193,7 +250,7 @@ class BankClassify():
                 spend = float(re.sub("[^0-9\.-]", "", splits[3])) * -1
             else: # paid in
                 spend = float(re.sub("[^0-9\.-]", "", splits[4]))
-            
+
             amounts.append(spend)
 
             #Description
@@ -370,39 +427,13 @@ class BankClassify():
         # cast types to columns for math
         df = df.astype({"desc": str, "date": str, "amount": float})
 
-
-        return df
-
-    def _replace_phonenumbers(self, df):
-        """Read phonebook and swap numbers to names if possible (useful for swish)"""
-
-        try:
-            phonebook = pd.read_csv('contacts.csv', skiprows=0)
-        except:
-            print('No contacts.csv file exists or error reading file')
-            return
-
-        # Clean the numbers field from symbols and whitespace
-        phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.replace('[+, ,-]','')
-        # Remove second number in special cases
-        phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.split(':::').str[0]
-
-        # Remove first 0 to get more similar to the  format +46 format as in swish
-        phonebook['Phone 1 - Value'] = phonebook['Phone 1 - Value'].str.lstrip('046')
-
-        #Remove 46 in all numbers that start with 46
-        df['desc'] = df['desc'].str.replace(r'^46', '')
-
-        phonebook['Name'] = phonebook['Name'] + ' (Swish)'
-
-        # Replace the desc if it matches the number in the phonebook
-        phonebook_usable = phonebook[phonebook['Phone 1 - Value'].isin(df['desc'])][['Name', 'Phone 1 - Value']]
-        phonebook_dictionary = phonebook.set_index('Phone 1 - Value')['Name'].to_dict()
-        df['desc'] = df['desc'].replace(phonebook_dictionary)
-
-        #This Works but NaN
-        #df['desc'].map({'46701495141': 'Hej'})
-
+        """
+        del df['Bokföringsdatum']
+        del df['date_old']
+        del df['Verifikationsnummer']
+        del df['Saldo']
+        """
+        print("Finished adding SEB data")
 
         return df
 
@@ -411,10 +442,13 @@ class BankClassify():
         (text, category)"""
         train = []
         subset = df[df['cat'] != '']
+        subset = subset.dropna()
+        train_place = 0
         for i in subset.index:
-            row = subset.iloc[i]
-            new_desc = self._strip_numbers(row['desc'])
+            row = subset.iloc[train_place]
+            new_desc = _strip_numbers(row['desc'])
             train.append( (new_desc, row['cat']) )
+            train_place = train_place + 1
 
         return train
 
@@ -432,10 +466,6 @@ class BankClassify():
             features[token] = True
 
         return features
-
-    def _strip_numbers(self, s):
-        """Strip numbers from the given string"""
-        return re.sub("[^A-Z ]", "", s)
 
     def _split_by_multiple_delims(self, string, delims):
         """Split the given string by the list of delimiters given"""
